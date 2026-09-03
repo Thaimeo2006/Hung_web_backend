@@ -1,6 +1,7 @@
-from database import SessionLocal, User, WaterRecord
-from fastapi import FastAPI, Request, HTTPException, Depends, File, UploadFile, Form, Query
+from database import SessionLocal, User, Customer, WaterRecord
+from fastapi import FastAPI, Request, HTTPException, Depends, File, UploadFile, Form, Query, Header
 from fastapi.responses import FileResponse
+from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -64,7 +65,7 @@ def check_login(
 
 @app.post("/check_and_save")
 async def check_and_save(
-    session_token: str = Form(),
+    session_token: str = Header(...),
     customer_id: str = Form(),
     image: UploadFile = File(),
     record_time: datetime = Form(),
@@ -167,8 +168,8 @@ async def check_and_save(
 
 @app.get("/history")
 def serve_history_summary(
-    user_id: str = Query(...), 
-    session_token: str = Query(...),
+    session_token: str = Header(...),
+    user_id: str = Query(...),
     limit: int = Query(20, description="Maximum return records"),
     offset: int = Query(0),
     db: Session = Depends(get_db)
@@ -209,15 +210,14 @@ def serve_history_summary(
 @app.get("/history/{record_id}")
 def serve_history_detail(
     record_id: int,
-    user_id: str = Query(...),
-    session_token: str = Query(...),
+    session_token: str = Header(...),
     db: Session = Depends(get_db)
 ):
-    # Check user in sessions
-    # if session_token not in sessions:
-    #     raise HTTPException(status_code=401, detail="Session invalid or expired")
-    # if sessions[session_token] != user_id:
-    #     raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+    #Verify user
+    if session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
+    
+    user_id = sessions["session_token"]
 
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
@@ -245,15 +245,15 @@ def serve_history_detail(
 @app.get("/image/{record_id}")
 def serve_image(
     record_id: int,
-    user_id: str = Query(...), 
-    session_token: str = Query(...),
+    session_token: str = Header(...),
+    user_id: str = Query(...),
     db: Session = Depends(get_db)
 ):
-    # Check user in sessions
-    # if session_token not in sessions:
-    #     raise HTTPException(status_code=401, detail="Session invalid or expired")
-    # if sessions[session_token] != user_id:
-    #     raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+    #Verify user
+    if session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
+    
+    user_id = sessions["session_token"]
 
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
@@ -270,5 +270,64 @@ def serve_image(
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/nearby_meter")
+def serve_nearby_meters(
+    session_token: str = Header(...),
+    limit: int = Query(..., default= 5),
+    latitude: float = Query(...),
+    longitude: float = Query(...),
+    db: Session = Depends(get_db)
+):
+    #Verify user
+    if session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
+    
+    user_id = sessions["session_token"]
+    
+    #Spherical Law of Cosines Function (to M)
+    lat_rad = func.radians(latitude)
+    lon_rad = func.radians(longitude)
+
+    db_lat_rad = func.radians(Customer.latitude)
+    db_lon_rad = func.radians(Customer.longitude)
+    
+    distance_expr = 6371000.0 * func.acos(
+        func.sin(lat_rad) * func.sin(db_lat_rad) +
+        func.cos(lat_rad) * func.cos(db_lat_rad) * func.cos(db_lon_rad - lon_rad)
+    )
+
+    try:
+        nearby_customers = (
+            db.query(
+                Customer.id,
+                Customer.name,
+                Customer.latitude,
+                Customer.longitude,
+                distance_expr.label("distance_m")
+            )
+            .filter(Customer.latitude.isnot(None), Customer.longitude.isnot(None))
+            .order_by(distance_expr.asc())
+            .limit(limit)
+            .all()
+        )
+
+        result = []
+        for customer in nearby_customers:
+            result.append({
+                "id": customer.id,
+                "name": customer.username,
+                "identity_number": customer.identity_number,
+                "address": customer.address
+            })
+
+        return {
+            "status": "success",
+            "count": len(result),
+            "data": result
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
