@@ -25,7 +25,7 @@ class User(Base):
         primary_key=True,
         default=lambda: secrets.token_hex(32)
     )
-    username = Column(String(32), unique=True, nullable=False)
+    email = Column(String(32), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     
     #Relationship with record table

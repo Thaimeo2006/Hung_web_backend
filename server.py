@@ -1,15 +1,16 @@
 from database import SessionLocal, User, WaterRecord
 from fastapi import FastAPI, Request, HTTPException, Depends, File, UploadFile, Form, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from sqlalchemy import text, DateTime
+#from sqlalchemy import text
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from passlib.context import CryptContext
 import tempfile
 import os
+import secrets
 
-#Create "uploads" dir to save image
-os.makedirs("./uploads", exist_ok=True)
+#Create "images" dir to save image
+os.makedirs("./images", exist_ok=True)
 #Create "coordinates" dir to save log file from AI model
 os.makedirs("./coordinates", exist_ok=True)
 
@@ -20,16 +21,51 @@ def get_db():
     finally:
         db.close()
 
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto"
+)
+
 app = FastAPI()
 sessions={}
-@app.get("/login")
-def check_login():
-    return FileResponse("login.html")
+
+def garbage_collector():
+    pass
+
+@app.post("/login")
+def check_login(
+    username: str = Form(),
+    password: str = Form(),
+    db: Session = Depends(get_db)
+):
+    if username=="":
+        return HTTPException(
+            status_code= 400,
+            detail= "Do not leave the username blank"
+        )
+    user_record = (
+        db.query(User)
+        .filter(User.username == username)
+        .first()
+    )
+    if user_record is not None:
+        if pwd_context.verify(password, user_record.password_hash):
+            session_token = secrets.token_hex(32)
+            sessions["session_token"] = user_record.id
+            return {
+                "message": "Login successful",
+                "user_id": user_record.id,
+                "session_token": session_token,
+            }
+    return HTTPException(
+        status_code= 400,
+        detail= "Invalid username or password"
+    )
 
 @app.post("/check_and_save")
 async def check_and_save(
-    user_id: str = Form(),
     session_token: str = Form(),
+    customer_id: str = Form(),
     image: UploadFile = File(),
     record_time: datetime = Form(),
     result: float = Form(),
@@ -37,17 +73,16 @@ async def check_and_save(
     coordinates: UploadFile = File(),
     db: Session = Depends(get_db)
 ):
-    #Check user in sessions
-    #if session_token not in sessions:
-    #    raise HTTPException(status_code=401, detail="Session invalid or expired")
+    #Verify user
+    if session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
     
-    #if sessions[session_token] != user_id:
-    #    raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+    user_id = sessions["session_token"]
 
     #Get latest record of user
     latest_record = (
         db.query(WaterRecord)
-        .filter(WaterRecord.user_id == user_id)
+        .filter(WaterRecord.customer_id == customer_id)
         .order_by(WaterRecord.record_time.desc())
         .first()
     )
@@ -60,28 +95,29 @@ async def check_and_save(
                 status_code= 400,
                 detail= "The result result is less than the latest record result. Please try again"
             )
-        if record_time <= latest_record.record_time:
+        #Maybe pyodbc return Naive Datetime
+        db_time = latest_record.record_time
+        if db_time.tzinfo is None:
+           db_time = db_time.replace(tzinfo=timezone.utc)
+
+        if record_time <= db_time:
             raise HTTPException(
                 status_code= 400,
                 detail= "Record time is older than the latest record time. Please try again."
             )
 
-    #Maybe podbc return Naive Datetime
-        db_time = latest_record.record_time
-        if db_time.tzinfo is None:
-            db_time = db_time.replace(tzinfo=timezone.utc)
-
     # Save new record
     try:
         with tempfile.NamedTemporaryFile(
-            dir= "./uploads",
+            dir= "./images",
             suffix= ".jpeg",
             mode= "wb",
             delete= False
         ) as image_file:
-            image_file.write(await image.read())
+            image_data = await image.read()
+            image_file.write(image_data)
             image_filename = os.path.basename(image_file.name)
-        image_relativepath = os.path.join("uploads", image_filename)
+        image_relativepath = os.path.join("images", image_filename)
 
     except Exception as e:
         raise HTTPException(
@@ -92,12 +128,14 @@ async def check_and_save(
     with tempfile.NamedTemporaryFile(
         dir= "./coordinates",
         suffix= ".txt",
-        mode= "w",
+        mode= "wb",
         delete= False
     ) as coordinates_file:
-        coordinates_file.write(coordinates.read())
+        coordinates_data = await coordinates.read()
+        coordinates_file.write(coordinates_data)
         coordinates_filename = os.path.basename(coordinates_file.name)
     coordinates_relativepath = os.path.join("coordinates", coordinates_filename)
+
     try:
         new_record = WaterRecord(
             user_id=user_id,
@@ -129,20 +167,18 @@ async def check_and_save(
 
 @app.get("/history")
 def serve_history_summary(
-    user_id: int = Query(...), 
+    user_id: str = Query(...), 
     session_token: str = Query(...),
-    limit: int = Query(20, description="Số lượng bản ghi tối đa trả về"),
-    offset: int = Query(0, description="Vị trí bắt đầu lấy (dùng để chuyển trang)"),
+    limit: int = Query(20, description="Maximum return records"),
+    offset: int = Query(0),
     db: Session = Depends(get_db)
 ):
-    # 1. Kiểm tra xác thực user
+    #Check user in sessions
     if session_token not in sessions:
         raise HTTPException(status_code=401, detail="Session invalid or expired")
     
-    if sessions[session_token] != user_id:
-        raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+    user_id = sessions["session_token"]
 
-    # 2. Truy vấn Database lấy danh sách
     try:
         records = (
             db.query(WaterRecord)
@@ -152,15 +188,13 @@ def serve_history_summary(
             .limit(limit)
             .all()
         )
-        
-        # 3. Format lại dữ liệu trả về (CHỈ LẤY THÔNG TIN TÓM TẮT)
+
         history_data = []
-        for r in records:
+        for record in records:
             history_data.append({
-                "id": r.id,
-                "predicted": r.predicted,
-                "record_time": r.record_time
-                # KHÔNG gửi kèm image_path hay image_url ở đây
+                "id": record.id,
+                "record_time": record.record_time,
+                "result": record.result
             })
 
         return {
@@ -169,5 +203,72 @@ def serve_history_summary(
             "data": history_data
         }
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/history/{record_id}")
+def serve_history_detail(
+    record_id: int,
+    user_id: str = Query(...),
+    session_token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    # Check user in sessions
+    # if session_token not in sessions:
+    #     raise HTTPException(status_code=401, detail="Session invalid or expired")
+    # if sessions[session_token] != user_id:
+    #     raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+
+    try:
+        record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
+
+        if record is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        if record.user_id != user_id:
+            raise HTTPException(status_code=403, detail="You do not have permission to view this record")
+
+        return {
+            "status": "success",
+            "data": {
+                "id": record.id,
+                "record_time": record.record_time,
+                "image_url": f"/image/{record.id}?user_id={user_id}&session_token={session_token}",
+                "result": record.result,
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/image/{record_id}")
+def serve_image(
+    record_id: int,
+    user_id: str = Query(...), 
+    session_token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    # Check user in sessions
+    # if session_token not in sessions:
+    #     raise HTTPException(status_code=401, detail="Session invalid or expired")
+    # if sessions[session_token] != user_id:
+    #     raise HTTPException(status_code=403, detail="Unauthorized access for this user")
+
+    try:
+        record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
+
+        if record is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        if record.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        image_path = record.image_path
+        if not os.path.exists(image_path):
+            raise HTTPException(status_code=404, detail="Image file missing on server")
+        return FileResponse(path=image_path)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

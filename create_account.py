@@ -7,12 +7,12 @@ pwd_context = CryptContext(
 )
 
 db = SessionLocal()
-username = "test"
+username = "test@gmail.com"
 password = "test"
 
 password_hash = pwd_context.hash(password)
 user = User(
-    username = username,
+    email = username,
     password_hash = password_hash
 )
 
