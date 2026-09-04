@@ -1,6 +1,6 @@
 CREATE TABLE customers (
     id NVARCHAR(64) NOT NULL,
-    username NVARCHAR(40),
+    name NVARCHAR(40),
     identity_number NVARCHAR(12) NOT NULL,
     address NVARCHAR(120) NOT NULL,
     latitude FLOAT NOT NULL,

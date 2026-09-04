@@ -28,7 +28,7 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id = Column(String(64), primary_key=True, nullable=False, default=lambda: secrets.token_hex(32))
-    username = Column(String(40))
+    name = Column(String(40))
     identity_number = Column(String(12), nullable=False, unique=True)
     address = Column(String(120), nullable=False)
     latitude = Column(Float, nullable=False)
