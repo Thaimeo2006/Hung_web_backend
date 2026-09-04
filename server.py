@@ -15,6 +15,14 @@ os.makedirs("./images", exist_ok=True)
 #Create "coordinates" dir to save log file from AI model
 os.makedirs("./coordinates", exist_ok=True)
 
+def check_user(session_token):
+    if session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
+    
+    user_id = sessions["session_token"]
+    return user_id
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -74,13 +82,9 @@ async def check_and_save(
     coordinates: UploadFile = File(),
     db: Session = Depends(get_db)
 ):
-    #Verify user
-    if session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
+    check_user(session_token)
 
-    #Get latest record of user
+    #Get latest record of customer
     latest_record = (
         db.query(WaterRecord)
         .filter(WaterRecord.customer_id == customer_id)
@@ -139,7 +143,7 @@ async def check_and_save(
 
     try:
         new_record = WaterRecord(
-            user_id=user_id,
+            customer_id=customer_id,
             image_path=image_relativepath,
             record_time= record_time,
             result=result,
@@ -169,21 +173,17 @@ async def check_and_save(
 @app.get("/history")
 def serve_history_summary(
     session_token: str = Header(...),
-    user_id: str = Query(...),
+    customer_id: str = Query(...),
     limit: int = Query(20, description="Maximum return records"),
     offset: int = Query(0),
     db: Session = Depends(get_db)
 ):
-    #Check user in sessions
-    if session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
+    check_user(session_token)
 
     try:
         records = (
             db.query(WaterRecord)
-            .filter(WaterRecord.user_id == user_id)
+            .filter(WaterRecord.customer_id == customer_id)
             .order_by(WaterRecord.record_time.desc())
             .offset(offset)
             .limit(limit)
@@ -212,27 +212,21 @@ def serve_history_detail(
     record_id: int,
     session_token: str = Header(...),
     db: Session = Depends(get_db)
-):
-    #Verify user
-    if session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
+):    
+    check_user(session_token)
 
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
 
         if record is None:
             raise HTTPException(status_code=404, detail="Record not found")
-        if record.user_id != user_id:
-            raise HTTPException(status_code=403, detail="You do not have permission to view this record")
-
+        
         return {
             "status": "success",
             "data": {
                 "id": record.id,
                 "record_time": record.record_time,
-                "image_url": f"/image/{record.id}?user_id={user_id}&session_token={session_token}",
+                "image_url": f"/image/{record.id}",
                 "result": record.result,
             }
         }
@@ -246,22 +240,15 @@ def serve_history_detail(
 def serve_image(
     record_id: int,
     session_token: str = Header(...),
-    user_id: str = Query(...),
     db: Session = Depends(get_db)
 ):
-    #Verify user
-    if session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
+    check_user(session_token)
 
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
 
         if record is None:
             raise HTTPException(status_code=404, detail="Record not found")
-        if record.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Unauthorized access")
 
         image_path = record.image_path
         if not os.path.exists(image_path):
@@ -281,11 +268,7 @@ def serve_nearby_meters(
     longitude: float = Query(...),
     db: Session = Depends(get_db)
 ):
-    #Verify user
-    if session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
+    check_user(session_token)
     
     #Spherical Law of Cosines Function (to M)
     lat_rad = func.radians(latitude)
