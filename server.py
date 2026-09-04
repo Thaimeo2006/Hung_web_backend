@@ -60,7 +60,7 @@ def check_login(
     if user_record is not None:
         if pwd_context.verify(password, user_record.password_hash):
             session_token = secrets.token_hex(32)
-            sessions["session_token"] = user_record.id
+            sessions[session_token] = user_record.id
             return {
                 "message": "Login successful",
                 "user_id": user_record.id,
@@ -82,7 +82,7 @@ async def check_and_save(
     coordinates: UploadFile = File(),
     db: Session = Depends(get_db)
 ):
-    check_user(session_token)
+    user_id = check_user(session_token)
 
     #Get latest record of customer
     latest_record = (
@@ -112,6 +112,8 @@ async def check_and_save(
             )
 
     # Save new record
+    image_relativepath = None
+    coordinates_relativepath = None
     try:
         with tempfile.NamedTemporaryFile(
             dir= "./images",
@@ -124,51 +126,46 @@ async def check_and_save(
             image_filename = os.path.basename(image_file.name)
         image_relativepath = os.path.join("images", image_filename)
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail= f"Make new image file failed. {str(e)}"
-        )
+        with tempfile.NamedTemporaryFile(
+            dir= "./coordinates",
+            suffix= ".txt",
+            mode= "wb",
+            delete= False
+        ) as coordinates_file:
+            coordinates_data = await coordinates.read()
+            coordinates_file.write(coordinates_data)
+            coordinates_filename = os.path.basename(coordinates_file.name)
+        coordinates_relativepath = os.path.join("coordinates", coordinates_filename)
 
-    with tempfile.NamedTemporaryFile(
-        dir= "./coordinates",
-        suffix= ".txt",
-        mode= "wb",
-        delete= False
-    ) as coordinates_file:
-        coordinates_data = await coordinates.read()
-        coordinates_file.write(coordinates_data)
-        coordinates_filename = os.path.basename(coordinates_file.name)
-    coordinates_relativepath = os.path.join("coordinates", coordinates_filename)
-
-    try:
         new_record = WaterRecord(
             customer_id=customer_id,
             image_path=image_relativepath,
             record_time= record_time,
             result=result,
             ability= ability,
-            coordinates_path= coordinates_relativepath
+            coordinates_path= coordinates_relativepath,
+            photographer_id= user_id
         )
         db.add(new_record)
         db.commit()
         db.refresh(new_record)
         
-        return {
-            "status": "success", 
-            "message": "Record saved.", 
-            #"record_id": new_record.id
-        }
     except Exception as e:
         db.rollback()
-        if os.path.exists(image_file.name):
+        if image_relativepath and os.path.exists(image_relativepath):
             os.remove(image_file.name)
-        if os.path.exists(coordinates_file.name):
+        if coordinates_relativepath and os.path.exists(coordinates_relativepath):
             os.remove(coordinates_file.name)
         raise HTTPException(
             status_code=500,
             detail=f"Add to sql database failed. {str(e)}"
         )
+
+    return {
+        "status": "success", 
+        "message": "Record saved.", 
+        #"record_id": new_record.id
+    }
 
 @app.get("/history")
 def serve_history_summary(
@@ -263,7 +260,7 @@ def serve_image(
 @app.get("/nearby_meter")
 def serve_nearby_meters(
     session_token: str = Header(...),
-    limit: int = Query(..., default= 5),
+    limit: int = Query(default= 5),
     latitude: float = Query(...),
     longitude: float = Query(...),
     db: Session = Depends(get_db)
@@ -287,9 +284,9 @@ def serve_nearby_meters(
             db.query(
                 Customer.id,
                 Customer.name,
-                Customer.latitude,
-                Customer.longitude,
-                distance_expr.label("distance_m")
+                Customer.identity_number,
+                Customer.address,
+                #distance_expr.label("distance_m")
             )
             .filter(Customer.latitude.isnot(None), Customer.longitude.isnot(None))
             .order_by(distance_expr.asc())
@@ -301,7 +298,7 @@ def serve_nearby_meters(
         for customer in nearby_customers:
             result.append({
                 "id": customer.id,
-                "name": customer.username,
+                "name": customer.name,
                 "identity_number": customer.identity_number,
                 "address": customer.address
             })
@@ -309,7 +306,7 @@ def serve_nearby_meters(
         return {
             "status": "success",
             "count": len(result),
-            "data": result
+            "result": result
         }
 
     except Exception as e:
