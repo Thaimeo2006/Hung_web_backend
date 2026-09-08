@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 import tempfile
 import os
@@ -16,12 +16,10 @@ os.makedirs("./images", exist_ok=True)
 os.makedirs("./coordinates", exist_ok=True)
 
 def check_user(session_token):
-    if session_token not in sessions:
+    user_id = sessions.get(session_token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Session invalid or expired")
-    
-    user_id = sessions["session_token"]
     return user_id
-
 
 def get_db():
     db = SessionLocal()
@@ -37,9 +35,6 @@ pwd_context = CryptContext(
 
 app = FastAPI()
 sessions={}
-
-def garbage_collector():
-    pass
 
 @app.post("/login")
 def check_login(
@@ -70,6 +65,18 @@ def check_login(
         status_code= 400,
         detail= "Invalid username or password"
     )
+
+@app.post("/logout")
+def logout_user(
+    session_token: str = Header(...)
+):
+    check_user(session_token)
+    sessions.pop(session_token, None)
+    
+    return {
+        "status": "success",
+        "message": "Logged out successfully"
+    }
 
 @app.post("/check_and_save")
 async def check_and_save(
@@ -266,6 +273,17 @@ def serve_nearby_meters(
     db: Session = Depends(get_db)
 ):
     check_user(session_token)
+
+    #Collect recorded customer today
+    #Add timezone in config.json in the future
+    timezone_vn = timezone(timedelta(hours=7))
+    today_start = datetime.now(timezone_vn).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    recorded_customer = (
+        db.query(WaterRecord.customer_id)
+        .filter(WaterRecord.record_time >= today_start)
+        .subquery()
+    )
     
     #Spherical Law of Cosines Function (to M)
     lat_rad = func.radians(latitude)
@@ -288,7 +306,11 @@ def serve_nearby_meters(
                 Customer.address,
                 #distance_expr.label("distance_m")
             )
-            .filter(Customer.latitude.isnot(None), Customer.longitude.isnot(None))
+            .filter(
+                Customer.latitude.isnot(None),
+                Customer.longitude.isnot(None),
+                ~Customer.id.in_(recorded_customer)
+                )
             .order_by(distance_expr.asc())
             .limit(limit)
             .all()
@@ -305,8 +327,8 @@ def serve_nearby_meters(
 
         return {
             "status": "success",
-            "count": len(result),
-            "result": result
+            "record_number": len(result),
+            "data": result
         }
 
     except Exception as e:
