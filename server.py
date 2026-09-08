@@ -333,3 +333,75 @@ def serve_nearby_meters(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/new_customer")
+def make_new_customer(
+    session_token: str = Header(...),
+    name: str = Form(),
+    identity_number: str = Form(),
+    address: str = Form(),
+    latitude: float = Form(),
+    longitude: float = Form(),
+    force_add: bool = Form(False, description="Force add the customer while maybe it existed"),
+    db: Session = Depends(get_db)
+):
+    check_user(session_token)
+
+    #Check existed customer with the same identity_number
+    if not force_add:
+        # 1. Khai báo công thức tính khoảng cách
+        lat_rad = func.radians(latitude)
+        lon_rad = func.radians(longitude)
+        db_lat_rad = func.radians(Customer.latitude)
+        db_lon_rad = func.radians(Customer.longitude)
+        
+        distance_expr = 6371000.0 * func.acos(
+            func.sin(lat_rad) * func.sin(db_lat_rad) +
+            func.cos(lat_rad) * func.cos(db_lat_rad) * func.cos(db_lon_rad - lon_rad)
+        )
+
+        check_exist_customer = (
+            db.query(Customer, distance_expr.label("distance_m"))
+            .filter(Customer.identity_number == identity_number)
+            .all()
+        )
+        
+        if len(check_exist_customer) > 0:
+            return_customer = []
+            for row in check_exist_customer:
+                customer, distance_m = row.Customer, row.distance_m
+                distance_m = int(round(distance_m, 0))
+                return_customer.append({
+                    "name": customer.name,
+                    "identity_number": customer.identity_number,
+                    "address": customer.address,
+                    "distance": distance_m
+                })
+            return {
+                "status": "warning",
+                "message": f"Another customer with the same identity number already exists. Still save this new customer?",
+                "exist_customer": return_customer
+            }
+
+    #Save to database
+    try:
+        new_customer = Customer(
+            name=name,
+            identity_number=identity_number,
+            address=address,
+            latitude=latitude,
+            longitude=longitude
+        )
+        db.add(new_customer)
+        db.commit()
+        db.refresh(new_customer)
+        
+        return {
+            "status": "success",
+            "message": "Add new customer successfully",
+            "customer_id": new_customer.id
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
