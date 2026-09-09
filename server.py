@@ -6,12 +6,14 @@ from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqladmin import Admin, ModelView
+from sqladmin.authentication import AuthenticationBackend
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 from markupsafe import Markup
 import tempfile
 import os
 import secrets
+import json
 
 #Create "images" dir to save image
 os.makedirs("./images", exist_ok=True)
@@ -36,13 +38,39 @@ pwd_context = CryptContext(
     deprecated="auto"
 )
 
+with open("admin_account.json", "r") as f:
+    admin_account = json.load(f)
+    admin_username, admin_password_hash = admin_account["username"], admin_account["password_hash"]
+
+class AdminAuth(AuthenticationBackend):
+    async def login(self, request: Request) -> bool:
+        form = await request.form()
+        username = form.get("username")
+        password = form.get("password")
+
+        if username == admin_username and pwd_context.verify(password, admin_password_hash):
+            request.session.update({"session_token": secrets.token_hex(32)})
+            return True            
+        return False
+
+    async def logout(self, request: Request) -> bool:
+        request.session.clear()
+        return True
+
+    async def authenticate(self, request: Request) -> bool:
+        token = request.session.get("session_token")
+        if not token:
+            return False
+        return True
+
+authentication_backend = AdminAuth(secret_key=secrets.token_hex(32))
+
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/coordinates", StaticFiles(directory="coordinates"), name="coordinates")
 
 sessions={}
 
-# Giao diện cho bảng Nhân viên (User)
 class UserAdmin(ModelView, model=User):
     column_list = [User.id, User.username]
     column_searchable_list = [User.username]
@@ -50,7 +78,6 @@ class UserAdmin(ModelView, model=User):
     name_plural = "Employee list"
     icon = "fa-solid fa-user"
 
-# Giao diện cho bảng Khách hàng (Customer)
 class CustomerAdmin(ModelView, model=Customer):
     column_list = [Customer.id, Customer.name, Customer.identity_number, Customer.address]
     column_searchable_list = [Customer.name, Customer.identity_number]
@@ -58,13 +85,11 @@ class CustomerAdmin(ModelView, model=Customer):
     name_plural = "Customer list"
     icon = "fa-solid fa-house"
 
-# Giao diện cho bảng Lịch sử ghi nước (WaterRecord)
 class WaterRecordAdmin(ModelView, model=WaterRecord):
     column_list = [WaterRecord.id, WaterRecord.customer_id, WaterRecord.photographer_id, WaterRecord.result, WaterRecord.record_time]
     column_formatters_detail = {
         WaterRecord.image_path: lambda model, attribute: Markup(
             f'<a href="/{model.image_path}" target="_blank">'
-            # Kích thước ảnh được tăng lên max-height 300px để xem rõ hơn
             f'<img src="/{model.image_path}" style="max-height: 300px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">'
             f'</a>'
         ) if model.image_path else "",
@@ -81,10 +106,10 @@ class WaterRecordAdmin(ModelView, model=WaterRecord):
     name_plural = "Water record list"
     icon = "fa-solid fa-droplet"
 
-# Khởi tạo Admin page và gắn vào FastAPI
-admin = Admin(app, engine)
+#Admin page initialize
+admin = Admin(app, engine, authentication_backend=authentication_backend)
 
-# Kích hoạt các menu
+#Menu page for admin initialize
 admin.add_view(UserAdmin)
 admin.add_view(CustomerAdmin)
 admin.add_view(WaterRecordAdmin)
