@@ -1,11 +1,14 @@
-from database import SessionLocal, User, Customer, WaterRecord
+from database import SessionLocal, User, Customer, WaterRecord, engine
 from fastapi import FastAPI, Request, HTTPException, Depends, File, UploadFile, Form, Query, Header
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
+from sqladmin import Admin, ModelView
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
+from markupsafe import Markup
 import tempfile
 import os
 import secrets
@@ -34,7 +37,57 @@ pwd_context = CryptContext(
 )
 
 app = FastAPI()
+app.mount("/images", StaticFiles(directory="images"), name="images")
+app.mount("/coordinates", StaticFiles(directory="coordinates"), name="coordinates")
+
 sessions={}
+
+# Giao diện cho bảng Nhân viên (User)
+class UserAdmin(ModelView, model=User):
+    column_list = [User.id, User.username]
+    column_searchable_list = [User.username]
+    name = "Employee" 
+    name_plural = "Employee list"
+    icon = "fa-solid fa-user"
+
+# Giao diện cho bảng Khách hàng (Customer)
+class CustomerAdmin(ModelView, model=Customer):
+    column_list = [Customer.id, Customer.name, Customer.identity_number, Customer.address]
+    column_searchable_list = [Customer.name, Customer.identity_number]
+    name = "Customer"
+    name_plural = "Customer list"
+    icon = "fa-solid fa-house"
+
+# Giao diện cho bảng Lịch sử ghi nước (WaterRecord)
+class WaterRecordAdmin(ModelView, model=WaterRecord):
+    column_list = [WaterRecord.id, WaterRecord.customer_id, WaterRecord.photographer_id, WaterRecord.result, WaterRecord.record_time]
+    column_formatters_detail = {
+        WaterRecord.image_path: lambda model, attribute: Markup(
+            f'<a href="/{model.image_path}" target="_blank">'
+            # Kích thước ảnh được tăng lên max-height 300px để xem rõ hơn
+            f'<img src="/{model.image_path}" style="max-height: 300px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">'
+            f'</a>'
+        ) if model.image_path else "",
+        
+        WaterRecord.coordinates_path: lambda model, attribute: Markup(
+            f'<a href="/{model.coordinates_path}" target="_blank" style="padding: 8px 16px; background-color: #0d6efd; color: white; text-decoration: none; border-radius: 4px; display: inline-block;">'
+            f'<i class="fa-solid fa-file-lines"></i> See .txt file'
+            f'</a>'
+        ) if model.coordinates_path else ""
+    }
+    column_sortable_list = [WaterRecord.record_time, WaterRecord.result]
+    column_default_sort = ("record_time", True) 
+    name = "Water record"
+    name_plural = "Water record list"
+    icon = "fa-solid fa-droplet"
+
+# Khởi tạo Admin page và gắn vào FastAPI
+admin = Admin(app, engine)
+
+# Kích hoạt các menu
+admin.add_view(UserAdmin)
+admin.add_view(CustomerAdmin)
+admin.add_view(WaterRecordAdmin)
 
 @app.post("/login")
 def check_login(
@@ -70,7 +123,6 @@ def check_login(
 def logout_user(
     session_token: str = Header(...)
 ):
-    check_user(session_token)
     sessions.pop(session_token, None)
     
     return {
@@ -160,9 +212,9 @@ async def check_and_save(
     except Exception as e:
         db.rollback()
         if image_relativepath and os.path.exists(image_relativepath):
-            os.remove(image_file.name)
+            os.remove(image_relativepath)
         if coordinates_relativepath and os.path.exists(coordinates_relativepath):
-            os.remove(coordinates_file.name)
+            os.remove(coordinates_relativepath)
         raise HTTPException(
             status_code=500,
             detail=f"Add to sql database failed. {str(e)}"

@@ -35,8 +35,23 @@ class Customer(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
 
-    #Relationship with record table
-    records = relationship("WaterRecord", back_populates="owner")
+    last_paid_record_id = Column(
+        Integer, 
+        ForeignKey("water_records.id", use_alter=True, name="fk_customer_last_paid"), 
+        nullable=True
+    )
+
+    records = relationship(
+        "WaterRecord", 
+        back_populates="owner", 
+        foreign_keys="[WaterRecord.customer_id]"
+    )
+
+    last_paid_record = relationship(
+        "WaterRecord", 
+        foreign_keys=[last_paid_record_id],
+        post_update=True # Must have to except error loops
+    )
 
 class WaterRecord(Base):
     __tablename__ = "water_records"
@@ -51,6 +66,6 @@ class WaterRecord(Base):
     photographer_id = Column(String(64), ForeignKey("users.id"), nullable=False)
 
     #Relationship with customers table
-    owner = relationship("Customer", back_populates="records")
+    owner = relationship("Customer", back_populates="records", foreign_keys=[customer_id])
 
 Base.metadata.create_all(bind=engine)
