@@ -9,10 +9,14 @@ from sqladmin import Admin
 from datetime import datetime, timezone, timedelta
 from admin import authentication_backend, UserAdmin, CustomerAdmin, WaterRecordAdmin
 from password_store import pwd_context
+from starlette.background import BackgroundTasks
 import tempfile
 import os
 import secrets
-import json
+import zipfile
+import csv
+import io
+import tempfile
 
 #Create "images" dir to save image
 os.makedirs("./images", exist_ok=True)
@@ -31,6 +35,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def cleanup_temp_file(path: str):
+    if os.path.exists(path):
+        os.remove(path)
+
+with open("password/token_for_ai_dev.txt", "r") as f:
+    AI_TOKEN = f.read().strip()
 
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
@@ -414,3 +426,48 @@ def make_new_customer(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+@app.get("/export_record_data")
+def export_ai_dataset(
+    background_tasks: BackgroundTasks,
+    ai_token: str = Header(..., description="Unique token for AI developer"),
+    db: Session = Depends(get_db)
+):
+    #Check token
+    if ai_token != AI_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    records = db.query(WaterRecord).all()
+    fd, temp_zip_path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+
+    try:
+        with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            csv_buffer = io.StringIO()
+            csv_writer = csv.writer(csv_buffer)
+            csv_writer.writerow(["record_id", "image_filename", "coordinates_filename", "ability"])
+
+            for record in records:
+                img_name = os.path.basename(record.image_path) if record.image_path else ""
+                coord_name = os.path.basename(record.coordinates_path) if record.coordinates_path else ""
+
+                if record.image_path and os.path.exists(record.image_path):
+                    zip_file.write(record.image_path, arcname=f"images/{img_name}")
+
+                if record.coordinates_path and os.path.exists(record.coordinates_path):
+                    zip_file.write(record.coordinates_path, arcname=f"coordinates/{coord_name}")
+
+                csv_writer.writerow([record.id, img_name, coord_name, record.ability])
+
+            zip_file.writestr("dataset_labels.csv", csv_buffer.getvalue())
+
+    except Exception as e:
+        cleanup_temp_file(temp_zip_path)
+        raise HTTPException(status_code=500, detail=f"Error in creating zip file: {str(e)}")
+
+    background_tasks.add_task(cleanup_temp_file, temp_zip_path)
+    
+    return FileResponse(
+        path=temp_zip_path, 
+        filename="water_meter_dataset.zip", 
+        media_type="application/zip"
+    )
