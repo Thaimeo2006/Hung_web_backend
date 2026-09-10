@@ -3,7 +3,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import secrets
 from urllib.parse import quote_plus
 
-with open("database_password.txt", "r") as f:
+with open("password/database_password.txt", "r") as f:
     mssql_password = f.read().strip()
 
 DATABASE_URL = (
@@ -25,6 +25,8 @@ class User(Base):
     username = Column(String(32), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
 
+    records_taken = relationship("WaterRecord", back_populates="photographer")
+
 class Customer(Base):
     __tablename__ = "customers"
 
@@ -43,7 +45,7 @@ class Customer(Base):
 
     records = relationship(
         "WaterRecord", 
-        back_populates="owner", 
+        back_populates="customer", 
         foreign_keys="[WaterRecord.customer_id]"
     )
 
@@ -65,7 +67,8 @@ class WaterRecord(Base):
     coordinates_path = Column(String(256))
     photographer_id = Column(String(64), ForeignKey("users.id"), nullable=False)
 
-    #Relationship with customers table
-    owner = relationship("Customer", back_populates="records", foreign_keys=[customer_id])
+    #Relationship
+    customer = relationship("Customer", back_populates="records", foreign_keys=[customer_id])
+    photographer = relationship("User", back_populates="records_taken", foreign_keys=[photographer_id])
 
 Base.metadata.create_all(bind=engine)
