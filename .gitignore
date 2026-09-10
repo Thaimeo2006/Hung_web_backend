@@ -1,6 +1,5 @@
 __pycache__
 coordinates
 images
-admin_account.json
-database_password.txt
+password
 edit_database.sql
