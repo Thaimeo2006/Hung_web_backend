@@ -6,7 +6,6 @@ API_URL = "http://localhost:8000/export_record_data"
 with open("password/token_for_ai_dev.txt", "r") as f:
     AI_TOKEN = f.read().strip()
 
-
 print("Downloading dataset from server. Please wait...")
 response = requests.get(
     API_URL, 
