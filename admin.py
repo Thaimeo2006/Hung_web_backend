@@ -1,6 +1,8 @@
 from database import User, Customer, WaterRecord
 from sqladmin import ModelView
 from sqladmin.authentication import AuthenticationBackend
+from wtforms import Form, StringField, PasswordField
+from wtforms.validators import DataRequired, Optional, Regexp, Length
 from fastapi import Request
 from password_store import pwd_context
 from markupsafe import Markup
@@ -34,12 +36,69 @@ class AdminAuth(AuthenticationBackend):
 
 authentication_backend = AdminAuth(secret_key=secrets.token_hex(32))
 
+
+class UserForm(Form):
+
+    username = StringField(
+        "Username",
+        validators=[
+            DataRequired()
+        ]
+    )
+
+    password = PasswordField(
+        "New password",
+        validators=[
+            Optional(),
+            Length(
+                min=12,
+                message="Password must be at least 12 characters."
+            ),
+            Regexp(
+                r'^[\x21-\x7E]+$',
+                message="Password contains invalid characters."
+            )
+        ]
+    )
+
 class UserAdmin(ModelView, model=User):
     column_list = [User.id, User.username]
     column_searchable_list = [User.username]
     name = "Employee" 
     name_plural = "Employee list"
     icon = "fa-solid fa-user"
+
+    """
+    form_extra_fields = {
+        "password": PasswordField(
+            "New password",
+            validators=[
+                Optional(),
+                Length(
+                    min=12,
+                    message="Password must be at least 12 characters."
+                ),
+                Regexp(
+                    r'^[\x21-\x7E]+$',
+                    message="Password contains invalid characters."
+                )
+            ]
+        )
+    }
+    """
+
+    form = UserForm
+
+    form_columns = [User.username, "password"]
+
+    async def on_model_change(self, data, model, is_created, request):
+        plain_password = data.pop("password", None)
+
+        if is_created and not plain_password:
+            raise ValueError("Password is required when creating a new employee!")
+
+        if plain_password:
+            data["password_hash"] = pwd_context.hash(plain_password)
 
 class CustomerAdmin(ModelView, model=Customer):
     column_list = [Customer.id, Customer.name, Customer.identity_number, Customer.address]
