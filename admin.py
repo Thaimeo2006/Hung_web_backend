@@ -1,13 +1,13 @@
 from database import User, Customer, WaterRecord
 from sqladmin import ModelView
 from sqladmin.authentication import AuthenticationBackend
-from sqlalchemy import Request
+from fastapi import Request
 from password_store import pwd_context
 from markupsafe import Markup
 import secrets
 import json
 
-with open("admin_account.json", "r") as f:
+with open("password/admin_account.json", "r") as f:
     admin_account = json.load(f)
     admin_username, admin_password_hash = admin_account["username"], admin_account["password_hash"]
 
