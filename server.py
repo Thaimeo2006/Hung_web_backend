@@ -10,13 +10,13 @@ from datetime import datetime, timezone, timedelta
 from admin import authentication_backend, UserAdmin, CustomerAdmin, WaterRecordAdmin
 from password_store import pwd_context
 from starlette.background import BackgroundTasks
+from uuid import uuid4
 import tempfile
 import os
 import secrets
 import zipfile
 import csv
 import io
-import tempfile
 
 #Create "images" dir to save image
 os.makedirs("./images", exist_ok=True)
@@ -142,6 +142,7 @@ async def check_and_save(
     # Save new record
     image_relativepath = None
     coordinates_relativepath = None
+    """
     try:
         with tempfile.NamedTemporaryFile(
             dir= "./images",
@@ -164,7 +165,52 @@ async def check_and_save(
             coordinates_file.write(coordinates_data)
             coordinates_filename = os.path.basename(coordinates_file.name)
         coordinates_relativepath = os.path.join("coordinates", coordinates_filename)
+    """
+    image_data = await image.read()
+    coordinates_data = await coordinates.read()
 
+    while True:
+        new_name = str(uuid4())
+
+        image_relativepath = os.path.join("images", f"{new_name}.jpeg")
+        coordinates_relativepath = os.path.join("coordinates", f"{new_name}.txt")
+
+        image_fd = None
+        coordinates_fd = None
+
+        try:
+            image_fd = os.open(image_relativepath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(image_fd, image_data)
+            os.close(image_fd)
+            image_fd = None
+
+            coordinates_fd = os.open(coordinates_relativepath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(coordinates_fd, coordinates_data)
+            os.close(coordinates_fd)
+            coordinates_fd = None
+
+            break
+
+        except FileExistsError:
+            continue
+
+        except Exception as e:
+            if image_fd is not None:
+                os.close(image_fd)
+            if coordinates_fd is not None:
+                os.close(coordinates_fd)
+
+            if image_relativepath and os.path.exists(image_relativepath):
+                os.remove(image_relativepath)
+            if coordinates_relativepath and os.path.exists(coordinates_relativepath):
+                os.remove(coordinates_relativepath)
+
+            raise HTTPException(
+                status_code = 500,
+                detail= f"Database error: {str(e)}"
+            )
+
+    try:
         new_record = WaterRecord(
             customer_id=customer_id,
             image_path=image_relativepath,
