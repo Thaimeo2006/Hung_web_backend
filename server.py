@@ -1,7 +1,10 @@
+"""Main program, run the server, manage admin page, connect to mobile app"""
+
 from database import SessionLocal, User, Customer, WaterRecord, engine
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query, Header
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -17,14 +20,21 @@ import secrets
 import zipfile
 import csv
 import io
+import aiofiles
+#import jwt
 
 #Create "images" dir to save image
 os.makedirs("./images", exist_ok=True)
 #Create "coordinates" dir to save log file from AI model
 os.makedirs("./coordinates", exist_ok=True)
 
-def check_user(session_token):
-    user_id = sessions.get(session_token)
+sessions={}
+security = HTTPBearer()
+
+def check_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    user_id = sessions.get(token)
+    
     if not user_id:
         raise HTTPException(status_code=401, detail="Session invalid or expired")
     return user_id
@@ -36,19 +46,19 @@ def get_db():
     finally:
         db.close()
 
-
 def cleanup_temp_file(path: str):
     if os.path.exists(path):
         os.remove(path)
 
-with open("password/token_for_ai_dev.txt", "r") as f:
-    AI_TOKEN = f.read().strip()
+try:
+    with open("password/token_for_ai_dev.txt", "r") as f:
+        AI_TOKEN = f.read().strip()
+except FileNotFoundError:
+    raise
 
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/coordinates", StaticFiles(directory="coordinates"), name="coordinates")
-
-sessions={}
 
 #Admin page initialize
 admin = Admin(app, engine, authentication_backend=authentication_backend)
@@ -90,8 +100,9 @@ def check_login(
 
 @app.post("/logout")
 def logout_user(
-    session_token: str = Header(...)
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
+    session_token = credentials.credentials
     sessions.pop(session_token, None)
     
     return {
@@ -100,7 +111,7 @@ def logout_user(
 
 @app.post("/check_and_save")
 async def check_and_save(
-    session_token: str = Header(...),
+    user_id: int = Depends(check_user),
     customer_id: str = Form(),
     image: UploadFile = File(),
     record_time: datetime = Form(),
@@ -109,8 +120,6 @@ async def check_and_save(
     coordinates: UploadFile = File(),
     db: Session = Depends(get_db)
 ):
-    user_id = check_user(session_token)
-
     #Get latest record of customer
     latest_record = (
         db.query(WaterRecord)
@@ -139,75 +148,29 @@ async def check_and_save(
             )
 
     # Save new record
-    image_relativepath = None
-    coordinates_relativepath = None
-    """
+    new_name = str(uuid4())
+
+    image_relativepath = os.path.join("images", f"{new_name}.jpeg")
+    coordinates_relativepath = os.path.join("coordinates", f"{new_name}.txt")
+
     try:
-        with tempfile.NamedTemporaryFile(
-            dir= "./images",
-            suffix= ".jpeg",
-            mode= "wb",
-            delete= False
-        ) as image_file:
-            image_data = await image.read()
-            image_file.write(image_data)
-            image_filename = os.path.basename(image_file.name)
-        image_relativepath = os.path.join("images", image_filename)
+        async with aiofiles.open(image_relativepath, "wb") as buffer:
+            while chunk := await image.read(1024 * 1024):
+                await buffer.write(chunk)
 
-        with tempfile.NamedTemporaryFile(
-            dir= "./coordinates",
-            suffix= ".txt",
-            mode= "wb",
-            delete= False
-        ) as coordinates_file:
-            coordinates_data = await coordinates.read()
-            coordinates_file.write(coordinates_data)
-            coordinates_filename = os.path.basename(coordinates_file.name)
-        coordinates_relativepath = os.path.join("coordinates", coordinates_filename)
-    """
-    image_data = await image.read()
-    coordinates_data = await coordinates.read()
+        coordinates_data = await coordinates.read()
+        async with aiofiles.open(coordinates_relativepath, "wb") as f:
+            await f.write(coordinates_data)
+    except Exception as e:
+        if os.path.exists(image_relativepath):
+            os.remove(image_relativepath)
+        if os.path.exists(coordinates_relativepath):
+            os.remove(coordinates_relativepath)
 
-    while True:
-        new_name = str(uuid4())
-
-        image_relativepath = os.path.join("images", f"{new_name}.jpeg")
-        coordinates_relativepath = os.path.join("coordinates", f"{new_name}.txt")
-
-        image_fd = None
-        coordinates_fd = None
-
-        try:
-            image_fd = os.open(image_relativepath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(image_fd, image_data)
-            os.close(image_fd)
-            image_fd = None
-
-            coordinates_fd = os.open(coordinates_relativepath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(coordinates_fd, coordinates_data)
-            os.close(coordinates_fd)
-            coordinates_fd = None
-
-            break
-
-        except FileExistsError:
-            continue
-
-        except Exception as e:
-            if image_fd is not None:
-                os.close(image_fd)
-            if coordinates_fd is not None:
-                os.close(coordinates_fd)
-
-            if image_relativepath and os.path.exists(image_relativepath):
-                os.remove(image_relativepath)
-            if coordinates_relativepath and os.path.exists(coordinates_relativepath):
-                os.remove(coordinates_relativepath)
-
-            raise HTTPException(
-                status_code = 500,
-                detail= f"Database error: {str(e)}"
-            )
+        raise HTTPException(
+            status_code = 500,
+            detail= f"Database error: {str(e)}"
+        )
 
     try:
         new_record = WaterRecord(
@@ -240,14 +203,12 @@ async def check_and_save(
 
 @app.get("/history")
 def serve_history_summary(
-    session_token: str = Header(...),
+    user_id: str = Depends(check_user),
     customer_id: str = Query(...),
     limit: int = Query(20, description="Maximum return records"),
     offset: int = Query(0),
     db: Session = Depends(get_db)
 ):
-    check_user(session_token)
-
     try:
         records = (
             db.query(WaterRecord)
@@ -277,11 +238,9 @@ def serve_history_summary(
 @app.get("/history/{record_id}")
 def serve_history_detail(
     record_id: int,
-    session_token: str = Header(...),
+    user_id: str = Depends(check_user),
     db: Session = Depends(get_db)
-):    
-    check_user(session_token)
-
+):
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
 
@@ -306,11 +265,9 @@ def serve_history_detail(
 @app.get("/image/{record_id}")
 def serve_image(
     record_id: int,
-    session_token: str = Header(...),
+    user_id: str = Depends(check_user),
     db: Session = Depends(get_db)
 ):
-    check_user(session_token)
-
     try:
         record = db.query(WaterRecord).filter(WaterRecord.id == record_id).first()
 
@@ -329,18 +286,16 @@ def serve_image(
 
 @app.get("/nearby_meter")
 def serve_nearby_meters(
-    session_token: str = Header(...),
+    user_id: str = Depends(check_user),
     limit: int = Query(default= 5),
     latitude: float = Query(...),
     longitude: float = Query(...),
     db: Session = Depends(get_db)
 ):
-    check_user(session_token)
-
     #Collect recorded customer today
     #Add timezone in config.json in the future
     timezone_vn = timezone(timedelta(hours=7))
-    today_start = datetime.now(timezone_vn).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(timezone_vn).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
     recorded_customer = (
         db.query(WaterRecord.customer_id)
@@ -398,7 +353,7 @@ def serve_nearby_meters(
 
 @app.post("/new_customer")
 def make_new_customer(
-    session_token: str = Header(...),
+    user_id: str = Depends(check_user),
     name: str = Form(),
     identity_number: str = Form(),
     address: str = Form(),
@@ -407,8 +362,6 @@ def make_new_customer(
     force_add: bool = Form(False, description="Force add the customer while maybe it existed"),
     db: Session = Depends(get_db)
 ):
-    check_user(session_token)
-
     #Check existed customer with the same identity_number
     if not force_add:
         #Distance function
