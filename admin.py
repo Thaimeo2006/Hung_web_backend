@@ -121,6 +121,10 @@ class WaterRecordAdmin(ModelView, model=WaterRecord):
         WaterRecord.coordinates_path,
         WaterRecord.ability
     ]
+    column_labels = {
+        WaterRecord.image_path: "image",
+        WaterRecord.coordinates_path: "coordinates"
+    }
     column_formatters_detail = {
         WaterRecord.image_path: lambda model, attribute: Markup(
             f'<a href="/{model.image_path}" target="_blank">'
