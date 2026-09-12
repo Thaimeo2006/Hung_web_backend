@@ -28,8 +28,8 @@ import json
 with open("password/token_for_ai_dev.txt", "r") as f:
     AI_TOKEN = f.read().strip()
 
-with open("password/jwt_secret_key.txt", "r") as f:
-    JWT_SECRET_KEY = f.read().strip()
+with open("password/jwt_secret_key.txt", "rb") as f:
+    JWT_SECRET_KEY = f.read()
 
 with open("password/admin_account.json", "r") as f:
     admin_account = json.load(f)
