@@ -70,24 +70,10 @@ class UserAdmin(ModelView, model=User):
     name_plural = "Employee list"
     icon = "fa-solid fa-user"
 
-    """
-    form_extra_fields = {
-        "password": PasswordField(
-            "New password",
-            validators=[
-                Optional(),
-                Length(
-                    min=12,
-                    message="Password must be at least 12 characters."
-                ),
-                Regexp(
-                    r'^[\x21-\x7E]+$',
-                    message="Password contains invalid characters."
-                )
-            ]
-        )
-    }
-    """
+    column_details_list = [
+        User.username,
+        User.password_hash
+    ]
 
     form = UserForm
 
@@ -109,6 +95,15 @@ class CustomerAdmin(ModelView, model=Customer):
     name_plural = "Customer list"
     icon = "fa-solid fa-house"
 
+    column_details_list = [
+        Customer.name, 
+        Customer.identity_number, 
+        Customer.address,
+        Customer.latitude,
+        Customer.longitude,
+        Customer.last_paid_record 
+    ]
+
 class WaterRecordAdmin(ModelView, model=WaterRecord):
     column_list = [
         WaterRecord.id,
@@ -118,7 +113,6 @@ class WaterRecordAdmin(ModelView, model=WaterRecord):
         WaterRecord.record_time
     ]
     column_details_list = [
-        WaterRecord.id, 
         WaterRecord.customer,
         WaterRecord.image_path,
         WaterRecord.result, 
