@@ -21,23 +21,54 @@ import zipfile
 import csv
 import io
 import aiofiles
-#import jwt
+import jwt
+
+try:
+    with open("password/token_for_ai_dev.txt", "r") as f:
+        AI_TOKEN = f.read().strip()
+except FileNotFoundError:
+    raise
+
+try:
+    with open("password/jwt_secret_key.txt", "r") as f:
+        JWT_SECRET_KEY = f.read().strip()
+except FileNotFoundError:
+    raise
+
+JWT_ALGORITHM = "HS256"
+SESSION_TOKEN_EXPIRE_DAYS = 30
+TIMEZONE_VIETNAM = 7
+
+#Generate jwt token function
+def create_session_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
 
 #Create "images" dir to save image
 os.makedirs("./images", exist_ok=True)
 #Create "coordinates" dir to save log file from AI model
 os.makedirs("./coordinates", exist_ok=True)
 
-sessions={}
 security = HTTPBearer()
 
 def check_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    user_id = sessions.get(token)
-    
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Session invalid or expired")
-    return user_id
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])        
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Token payload invalid.")            
+        return user_id
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid session token.")
 
 def get_db():
     db = SessionLocal()
@@ -49,12 +80,6 @@ def get_db():
 def cleanup_temp_file(path: str):
     if os.path.exists(path):
         os.remove(path)
-
-try:
-    with open("password/token_for_ai_dev.txt", "r") as f:
-        AI_TOKEN = f.read().strip()
-except FileNotFoundError:
-    raise
 
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
@@ -86,10 +111,9 @@ def check_login(
     )
     if user_record is not None:
         if pwd_context.verify(password, user_record.password_hash):
-            session_token = secrets.token_hex(32)
-            sessions[session_token] = user_record.id
+            session_token = create_session_token(data={"sub": str(user_record.id)})
             return {
-                "message": "Logged in successfully!",
+                "message": "Logged in successfully! Send it to server for any request.",
                 "user_id": user_record.id,
                 "session_token": session_token,
             }
@@ -102,11 +126,9 @@ def check_login(
 def logout_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    session_token = credentials.credentials
-    sessions.pop(session_token, None)
     
     return {
-        "message": "Logged out successfully!"
+        "message": "Logged out successfully! Delete session token on client side."
     }
 
 @app.post("/check_and_save")
@@ -129,6 +151,8 @@ async def check_and_save(
     )
 
     #Check new record
+    if record_time.tzinfo is None:
+        record_time = record_time.replace(tzinfo=timezone(timedelta(hours=TIMEZONE_VIETNAM)))
     record_time = record_time.astimezone(timezone.utc)
     if latest_record is not None:
         if result < latest_record.result:
