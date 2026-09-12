@@ -2,42 +2,10 @@
 
 from database import User, Customer, WaterRecord
 from sqladmin import ModelView
-from sqladmin.authentication import AuthenticationBackend
 from wtforms import Form, StringField, PasswordField
 from wtforms.validators import DataRequired, Optional, Regexp, Length
-from fastapi import Request
 from password_store import pwd_context
 from markupsafe import Markup
-import secrets
-import json
-
-with open("password/admin_account.json", "r") as f:
-    admin_account = json.load(f)
-    admin_username, admin_password_hash = admin_account["username"], admin_account["password_hash"]
-
-class AdminAuth(AuthenticationBackend):
-    async def login(self, request: Request) -> bool:
-        form = await request.form()
-        username = form.get("username")
-        password = form.get("password")
-
-        if username == admin_username and pwd_context.verify(password, admin_password_hash):
-            request.session.update({"session_token": secrets.token_hex(32)})
-            return True            
-        return False
-
-    async def logout(self, request: Request) -> bool:
-        request.session.clear()
-        return True
-
-    async def authenticate(self, request: Request) -> bool:
-        token = request.session.get("session_token")
-        if not token:
-            return False
-        return True
-
-authentication_backend = AdminAuth(secret_key=secrets.token_hex(32))
-
 
 class UserForm(Form):
 

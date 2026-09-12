@@ -1,7 +1,7 @@
 """Main program, run the server, manage admin page, connect to mobile app"""
 
 from database import SessionLocal, User, Customer, WaterRecord, engine
-from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query, Header
+from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query, Header, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9,8 +9,9 @@ from sqlalchemy import func
 #from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqladmin import Admin
+from sqladmin.authentication import AuthenticationBackend
 from datetime import datetime, timezone, timedelta
-from admin import authentication_backend, UserAdmin, CustomerAdmin, WaterRecordAdmin
+from admin import UserAdmin, CustomerAdmin, WaterRecordAdmin
 from password_store import pwd_context
 from starlette.background import BackgroundTasks
 from uuid import uuid4
@@ -22,27 +23,32 @@ import csv
 import io
 import aiofiles
 import jwt
+import json
 
-try:
-    with open("password/token_for_ai_dev.txt", "r") as f:
-        AI_TOKEN = f.read().strip()
-except FileNotFoundError:
-    raise
+with open("password/token_for_ai_dev.txt", "r") as f:
+    AI_TOKEN = f.read().strip()
 
-try:
-    with open("password/jwt_secret_key.txt", "r") as f:
-        JWT_SECRET_KEY = f.read().strip()
-except FileNotFoundError:
-    raise
+with open("password/jwt_secret_key.txt", "r") as f:
+    JWT_SECRET_KEY = f.read().strip()
 
-JWT_ALGORITHM = "HS256"
-SESSION_TOKEN_EXPIRE_DAYS = 30
-TIMEZONE_VIETNAM = 7
+with open("password/admin_account.json", "r") as f:
+    admin_account = json.load(f)
+    admin_username, admin_password_hash = admin_account["username"], admin_account["password_hash"]
+
+with open("config.json", "r") as f:
+    config = json.load(f)
+    JWT_ALGORITHM =config["jwt_algorithm"]
+    USER_SESSION_TOKEN_EXPIRE_DAYS = config["user_session_token_expire_days"]
+    ADMIN_SESSION_TOKEN_EXPIRE_DAYS = config["admin_session_token_expire_days"]
+    TIME_ZONE = config["time_zone"]
 
 #Generate jwt token function
-def create_session_token(data: dict):
+def create_session_token(data: dict, admin: bool = False):
+    if admin:
+        expire_days = ADMIN_SESSION_TOKEN_EXPIRE_DAYS
+    expire_days = USER_SESSION_TOKEN_EXPIRE_DAYS
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=expire_days)
     to_encode.update({"exp": expire})
     
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -52,6 +58,38 @@ def create_session_token(data: dict):
 os.makedirs("./images", exist_ok=True)
 #Create "coordinates" dir to save log file from AI model
 os.makedirs("./coordinates", exist_ok=True)
+
+class AdminAuth(AuthenticationBackend):
+    async def login(self, request: Request) -> bool:
+        form = await request.form()
+        username = form.get("username")
+        password = form.get("password")
+
+        if username == admin_username and pwd_context.verify(password, admin_password_hash):
+            admin_token = create_session_token(data={"sub": "admin"}, admin=True)
+            request.session.update({"session_token": admin_token})
+            return True            
+        return False
+
+    async def logout(self, request: Request) -> bool:
+        request.session.clear()
+        return True
+
+    async def authenticate(self, request: Request) -> bool:
+        token = request.session.get("session_token")
+        if not token:
+            return False
+        try:
+            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            if payload.get("sub") == "admin":
+                return True
+            return False
+            
+        except jwt.ExpiredSignatureError:
+            request.session.clear()
+            return False
+        except jwt.InvalidTokenError:
+            return False
 
 security = HTTPBearer()
 
@@ -86,7 +124,7 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/coordinates", StaticFiles(directory="coordinates"), name="coordinates")
 
 #Admin page initialize
-admin = Admin(app, engine, authentication_backend=authentication_backend)
+admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=secrets.token_hex(32)))
 
 #Menu page for admin initialize
 admin.add_view(UserAdmin)
@@ -126,7 +164,6 @@ def check_login(
 def logout_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    
     return {
         "message": "Logged out successfully! Delete session token on client side."
     }
@@ -152,7 +189,7 @@ async def check_and_save(
 
     #Check new record
     if record_time.tzinfo is None:
-        record_time = record_time.replace(tzinfo=timezone(timedelta(hours=TIMEZONE_VIETNAM)))
+        record_time = record_time.replace(tzinfo=timezone(timedelta(hours=TIME_ZONE)))
     record_time = record_time.astimezone(timezone.utc)
     if latest_record is not None:
         if result < latest_record.result:
@@ -225,6 +262,7 @@ async def check_and_save(
         "message": "Record saved!"
     }
 
+"""
 @app.get("/history")
 def serve_history_summary(
     user_id: str = Depends(check_user),
@@ -307,6 +345,7 @@ def serve_image(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+"""
 
 @app.get("/nearby_meter")
 def serve_nearby_meters(

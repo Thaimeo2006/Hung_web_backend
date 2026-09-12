@@ -1,1 +1,6 @@
-{}
+{
+    "jwt_algorithm": "HS256",
+    "user_session_token_expire_days": 30,
+    "admin_session_token_expire_days": 0.5,
+    "time_zone": 7
+}
