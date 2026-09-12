@@ -1,3 +1,5 @@
+"""Define UI of admin page"""
+
 from database import User, Customer, WaterRecord
 from sqladmin import ModelView
 from sqladmin.authentication import AuthenticationBackend

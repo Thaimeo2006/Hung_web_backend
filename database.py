@@ -1,3 +1,5 @@
+"""Declare tables structure in sql database"""
+
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import secrets
