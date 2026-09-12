@@ -79,13 +79,13 @@ def check_login(
             session_token = secrets.token_hex(32)
             sessions[session_token] = user_record.id
             return {
-                "message": "Login successful",
+                "message": "Logged in successfully!",
                 "user_id": user_record.id,
                 "session_token": session_token,
             }
     return HTTPException(
         status_code= 400,
-        detail= "Invalid username or password"
+        detail= "Invalid username or password."
     )
 
 @app.post("/logout")
@@ -95,8 +95,7 @@ def logout_user(
     sessions.pop(session_token, None)
     
     return {
-        "status": "success",
-        "message": "Logged out successfully"
+        "message": "Logged out successfully!"
     }
 
 @app.post("/check_and_save")
@@ -236,9 +235,7 @@ async def check_and_save(
         )
 
     return {
-        "status": "success", 
-        "message": "Record saved.", 
-        #"record_id": new_record.id
+        "message": "Record saved!"
     }
 
 @app.get("/history")
@@ -270,8 +267,7 @@ def serve_history_summary(
             })
 
         return {
-            "status": "success",
-            "total_returned": len(history_data),
+            "message": "Retrieved history successfully",
             "data": history_data
         }
         
@@ -293,7 +289,7 @@ def serve_history_detail(
             raise HTTPException(status_code=404, detail="Record not found")
         
         return {
-            "status": "success",
+            "message": "Retrieved detail of record successfully!",
             "data": {
                 "id": record.id,
                 "record_time": record.record_time,
@@ -393,8 +389,7 @@ def serve_nearby_meters(
             })
 
         return {
-            "status": "success",
-            "record_number": len(result),
+            "message": "Retrieved nearby customers successfully!",
             "data": result
         }
 
@@ -416,7 +411,7 @@ def make_new_customer(
 
     #Check existed customer with the same identity_number
     if not force_add:
-        # 1. Khai báo công thức tính khoảng cách
+        #Distance function
         lat_rad = func.radians(latitude)
         lon_rad = func.radians(longitude)
         db_lat_rad = func.radians(Customer.latitude)
@@ -445,7 +440,6 @@ def make_new_customer(
                     "distance": distance_m
                 })
             return {
-                "status": "warning",
                 "message": f"Another customer with the same identity number already exists. Still save this new customer?",
                 "exist_customer": return_customer
             }
@@ -464,8 +458,7 @@ def make_new_customer(
         db.refresh(new_customer)
         
         return {
-            "status": "success",
-            "message": "Add new customer successfully",
+            "message": "Add new customer successfully!",
             "customer_id": new_customer.id
         }
     except Exception as e:
