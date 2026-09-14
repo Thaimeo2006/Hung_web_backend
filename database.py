@@ -34,7 +34,7 @@ class Customer(Base):
 
     id = Column(String(64), primary_key=True, nullable=False, default=lambda: secrets.token_hex(32))
     name = Column(String(40))
-    identity_number = Column(String(12), nullable=False, unique=True)
+    identity_number = Column(String(12), nullable=False)
     address = Column(String(120), nullable=False)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
