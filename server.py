@@ -2,12 +2,12 @@
 
 from database import SessionLocal, User, Customer, WaterRecord, engine
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query, Header, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
 #from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqladmin import Admin
 from sqladmin.authentication import AuthenticationBackend
 from datetime import datetime, timezone, timedelta
@@ -15,6 +15,8 @@ from admin import UserAdmin, CustomerAdmin, WaterRecordAdmin
 from password_store import pwd_context
 from starlette.background import BackgroundTasks
 from uuid import uuid4
+from typing import Annotated
+import pandas as pd
 import tempfile
 import os
 import secrets
@@ -41,6 +43,8 @@ with open("config.json", "r") as f:
     USER_SESSION_TOKEN_EXPIRE_DAYS = config["user_session_token_expire_days"]
     ADMIN_SESSION_TOKEN_EXPIRE_DAYS = config["admin_session_token_expire_days"]
     TIME_ZONE = config["time_zone"]
+    DEFAULT_RADIUS_M = config["default_radius_m"]
+    DEFAULT_LIMIT_NEARBY_METERS = config["default_limit_nearby_meters"]
 
 #Generate jwt token function
 def create_session_token(data: dict, admin: bool = False):
@@ -119,6 +123,11 @@ def cleanup_temp_file(path: str):
     if os.path.exists(path):
         os.remove(path)
 
+def to_utc(time: datetime):
+    if not time.tzinfo:
+        time = time.replace(tzinfo=timezone(timedelta(hours=TIME_ZONE)))
+        return time.astimezone(timezone.utc)
+
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/coordinates", StaticFiles(directory="coordinates"), name="coordinates")
@@ -188,9 +197,7 @@ async def check_and_save(
     )
 
     #Check new record
-    if record_time.tzinfo is None:
-        record_time = record_time.replace(tzinfo=timezone(timedelta(hours=TIME_ZONE)))
-    record_time = record_time.astimezone(timezone.utc)
+    record_time = to_utc(record_time)
     if latest_record is not None:
         if result < latest_record.result:
             raise HTTPException(
@@ -262,25 +269,62 @@ async def check_and_save(
         "message": "Record saved!"
     }
 
-"""
 @app.get("/history")
 def serve_history_summary(
+    customer_id: Annotated[list[str] | None, Query()] = None,
     user_id: str = Depends(check_user),
-    customer_id: str = Query(...),
-    limit: int = Query(20, description="Maximum return records"),
-    offset: int = Query(0),
+    all_customer: bool = Query(default=False),
+    limit: int = Query(20,ge=1, description="Maximum return records"),
+    offset: int = Query(0,ge=0),
+    month: str | None = Query(default= None),
+    start_time: datetime | None = Query(default=None),
+    end_time: datetime | None = Query(default=None),
+    export_xlsx: bool = Query(default=False),
     db: Session = Depends(get_db)
 ):
-    try:
-        records = (
-            db.query(WaterRecord)
-            .filter(WaterRecord.customer_id == customer_id)
-            .order_by(WaterRecord.record_time.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
+    query = db.query(WaterRecord)
+    if not all_customer:
+        if not customer_id:
+            raise HTTPException(
+                status_code=400,
+                detail="customer_id is required when all_customer is false."
+            )
+        query = query.filter(WaterRecord.customer_id.in_(customer_id))
+
+    if month:
+        try:
+            start_time = datetime.strptime(month, "%Y-%m")
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Bad month data format."
+            )
+        if start_time.month == 12:
+            end_time = datetime(start_time.year + 1, 1, 1)
+        else:
+            end_time = datetime(
+                start_time.year,
+                start_time.month + 1,
+                1
+            )
+        query = query.filter(
+            WaterRecord.record_time >= start_time,
+            WaterRecord.record_time <= end_time
         )
 
+    else:
+        if start_time:
+            start_time = to_utc(start_time)
+            query = query.filter(WaterRecord.record_time >= start_time)
+        if end_time:
+            end_time = to_utc(end_time)
+            query = query.filter(WaterRecord.record_time < end_time)
+    query = query.order_by(WaterRecord.record_time.desc())
+    if not export_xlsx:
+        try:
+            records = query.limit(limit).offset(offset).all()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         history_data = []
         for record in records:
             history_data.append({
@@ -293,10 +337,54 @@ def serve_history_summary(
             "message": "Retrieved history successfully",
             "data": history_data
         }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+    else:
+        try:
+            records = query.options(
+                joinedload(WaterRecord.customer),
+                joinedload(WaterRecord.photographer)
+            ).all()
+        except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
+        if not records:
+            raise HTTPException(status_code=404, detail="Không có dữ liệu trong khoảng thời gian này để xuất Excel.")
+        excel_data = []
+        for record in records:
+            local_time = record.record_time.astimezone(timezone(timedelta(hours=TIME_ZONE)))
+            excel_data.append({
+                "Full name": record.customer.name,
+                "Identity number": record.customer.identity_number,
+                "Address": record.customer.address,
+                "Record time": local_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "Result": record.result,
+                "Photographer": record.photographer.username
+            })
+
+        df = pd.DataFrame(excel_data)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='History records')
+
+            worksheet = writer.sheets['History records']
+            worksheet.column_dimensions['A'].width = 30
+            worksheet.column_dimensions['B'].width = 15
+            worksheet.column_dimensions['C'].width = 60
+            worksheet.column_dimensions['D'].width = 20
+            worksheet.column_dimensions['E'].width = 12
+            worksheet.column_dimensions['F'].width = 15
+
+        buffer.seek(0)
+        headers = {
+            'Content-Disposition': f'attachment; filename="history_customer.xlsx"'
+        }
+        return StreamingResponse(
+            buffer, 
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            headers=headers
+        )
+
+"""
 @app.get("/history/{record_id}")
 def serve_history_detail(
     record_id: int,
@@ -350,20 +438,18 @@ def serve_image(
 @app.get("/nearby_meter")
 def serve_nearby_meters(
     user_id: str = Depends(check_user),
-    limit: int = Query(default= 5),
+    limit: int = Query(default= DEFAULT_LIMIT_NEARBY_METERS),
+    radius: int = Query(default=DEFAULT_RADIUS_M),
     latitude: float = Query(...),
     longitude: float = Query(...),
     db: Session = Depends(get_db)
 ):
     #Collect recorded customer today
-    #Add timezone in config.json in the future
-    timezone_vn = timezone(timedelta(hours=7))
-    today_start = datetime.now(timezone_vn).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    today_start = datetime.now(timezone(timedelta(hours=TIME_ZONE))).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
     recorded_customer = (
         db.query(WaterRecord.customer_id)
         .filter(WaterRecord.record_time >= today_start)
-        .subquery()
     )
     
     #Spherical Law of Cosines Function (to M)
@@ -385,12 +471,13 @@ def serve_nearby_meters(
                 Customer.name,
                 Customer.identity_number,
                 Customer.address,
-                #distance_expr.label("distance_m")
+                distance_expr.label("distance_m")
             )
             .filter(
                 Customer.latitude.isnot(None),
                 Customer.longitude.isnot(None),
-                ~Customer.id.in_(recorded_customer)
+                ~Customer.id.in_(recorded_customer),
+                distance_expr <= radius
                 )
             .order_by(distance_expr.asc())
             .limit(limit)
@@ -403,12 +490,16 @@ def serve_nearby_meters(
                 "id": customer.id,
                 "name": customer.name,
                 "identity_number": customer.identity_number,
-                "address": customer.address
+                "address": customer.address,
+                "distance_m": int(round(customer.distance_m, 0))
             })
 
         return {
             "message": "Retrieved nearby customers successfully!",
-            "data": result
+            "data": result,
+            "meta": {
+
+            }
         }
 
     except Exception as e:
