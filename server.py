@@ -141,7 +141,7 @@ admin.add_view(CustomerAdmin)
 admin.add_view(WaterRecordAdmin)
 
 @app.post("/login")
-def check_login(
+async def check_login(
     username: str = Form(),
     password: str = Form(),
     db: Session = Depends(get_db)
@@ -170,7 +170,7 @@ def check_login(
     )
 
 @app.post("/logout")
-def logout_user(
+async def logout_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     return {
@@ -270,7 +270,7 @@ async def check_and_save(
     }
 
 @app.get("/history")
-def serve_history_summary(
+async def serve_history_summary(
     customer_id: Annotated[list[str] | None, Query()] = None,
     user_id: str = Depends(check_user),
     all_customer: bool = Query(default=False),
@@ -436,7 +436,7 @@ def serve_image(
 """
 
 @app.get("/nearby_meter")
-def serve_nearby_meters(
+async def serve_nearby_meters(
     user_id: str = Depends(check_user),
     limit: int = Query(default= DEFAULT_LIMIT_NEARBY_METERS),
     radius: int = Query(default=DEFAULT_RADIUS_M),
@@ -506,7 +506,7 @@ def serve_nearby_meters(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/new_customer")
-def make_new_customer(
+async def make_new_customer(
     user_id: str = Depends(check_user),
     name: str = Form(),
     identity_number: str = Form(),
@@ -573,7 +573,7 @@ def make_new_customer(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.get("/export_record_data")
-def export_ai_dataset(
+async def export_ai_dataset(
     background_tasks: BackgroundTasks,
     ai_token: str = Header(..., description="Unique token for AI developer"),
     db: Session = Depends(get_db)
