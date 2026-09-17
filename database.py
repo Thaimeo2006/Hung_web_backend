@@ -2,17 +2,12 @@
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-import secrets
 from urllib.parse import quote_plus
+import secrets
 
-with open("password/database_password.txt", "r") as f:
-    mssql_password = f.read().strip()
 
-DATABASE_URL = (
-    f"mssql+pyodbc://sa:{quote_plus(mssql_password)}@127.0.0.1:1433/water_meter"
-    "?driver=ODBC+Driver+18+for+SQL+Server"
-    "&TrustServerCertificate=yes"
-)
+with open("password/database_url.txt", "r") as f:
+    DATABASE_URL = f.read().strip()
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
