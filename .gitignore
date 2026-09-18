@@ -3,4 +3,4 @@ alembic.ini
 coordinates
 images
 password
-edit_database.sql
+*.sql
